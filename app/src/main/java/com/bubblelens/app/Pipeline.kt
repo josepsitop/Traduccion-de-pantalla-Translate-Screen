@@ -122,7 +122,9 @@ object Engine {
         }
         if (sb.isNotBlank()) chunks.add(sb.toString().trim())
         val glue = if (tgt == "ja" || tgt == "zh") "" else " "
-        return chunks.joinToString(glue) { translate(it, src, tgt) }
+        val translated = ArrayList<String>()
+        for (chunk in chunks) translated.add(translate(chunk, src, tgt))
+        return translated.joinToString(glue)
     }
 
     /** Modo "tocar": traduce todos los bloques de texto de la captura. */
