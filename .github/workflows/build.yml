@@ -37,7 +37,8 @@ jobs:
 
       - name: Causa del error (optimizado)
         if: steps.opt.outcome == 'failure'
-        run: grep -nE "^e: |What went wrong|Missing class|ERROR|error:|Execution failed|Could not|licen" -A6 build1.log | head -70 || true
+        run: |
+          grep -nE "^e: |What went wrong|Missing class|ERROR|error:|Execution failed|Could not|licen" -A6 build1.log | head -70 || true
 
       - name: Compilar (plan B, sin optimizar)
         if: steps.opt.outcome == 'failure'
@@ -47,7 +48,8 @@ jobs:
 
       - name: Causa del error (plan B)
         if: failure()
-        run: grep -nE "^e: |What went wrong|Missing class|ERROR|error:|Execution failed|Could not|licen" -A6 build2.log | head -70 || true
+        run: |
+          grep -nE "^e: |What went wrong|Missing class|ERROR|error:|Execution failed|Could not|licen" -A6 build2.log | head -70 || true
 
       - uses: actions/upload-artifact@v4
         with:
