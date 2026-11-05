@@ -1,0 +1,2 @@
+-dontwarn com.google.**
+-dontwarn kotlinx.**

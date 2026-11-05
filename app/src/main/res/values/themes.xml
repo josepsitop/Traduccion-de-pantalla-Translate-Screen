@@ -1,0 +1,15 @@
+<resources>
+    <style name="Theme.BubbleLens" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">@color/secondary</item>
+        <item name="colorSurface">@color/card</item>
+        <item name="colorOnSurface">@color/on_bg</item>
+        <item name="colorOutline">@color/stroke</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+    </style>
+
+    <style name="Theme.Transparent" parent="android:Theme.Translucent.NoTitleBar" />
+</resources>
