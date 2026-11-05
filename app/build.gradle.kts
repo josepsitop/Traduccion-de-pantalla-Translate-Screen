@@ -15,7 +15,7 @@ android {
         versionName = "1.0"
 
         // Solo 64 bits: casi todos los teléfonos actuales y el APK pesa mucho menos.
-        ndk { abiFilters += listOf("arm64-v8a") }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         resourceConfigurations += listOf("es", "en")
     }
 
