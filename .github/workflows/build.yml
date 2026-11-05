@@ -7,11 +7,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -20,7 +20,6 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      # Por si el archivo release.jks no se subió: se crea uno nuevo.
       - name: Keystore de respaldo
         run: |
           if [ ! -f app/release.jks ]; then
@@ -29,8 +28,26 @@ jobs:
               -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=BubbleLens"
           fi
 
-      - name: Compilar APK (release optimizado)
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
+      - name: Compilar (optimizado)
+        id: opt
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --console=plain 2>&1 | tee build1.log
+
+      - name: Causa del error (optimizado)
+        if: steps.opt.outcome == 'failure'
+        run: grep -nE "^e: |What went wrong|Missing class|ERROR|error:|Execution failed|Could not|licen" -A6 build1.log | head -70 || true
+
+      - name: Compilar (plan B, sin optimizar)
+        if: steps.opt.outcome == 'failure'
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --console=plain -Pnominify 2>&1 | tee build2.log
+
+      - name: Causa del error (plan B)
+        if: failure()
+        run: grep -nE "^e: |What went wrong|Missing class|ERROR|error:|Execution failed|Could not|licen" -A6 build2.log | head -70 || true
 
       - uses: actions/upload-artifact@v4
         with:
