@@ -538,11 +538,9 @@ class OverlayService : Service() {
         bubble?.busy = true
         try {
             if (!ensureModels(src, tgt)) return
-            val before = cap.frameCount
             bubble?.visibility = View.INVISIBLE
-            cap.awaitNewFrame(before, 350)
-            delay(40)
-            val shot = withContext(Dispatchers.Default) { cap.grab(null) }
+            delay(70)
+            val shot = cap.capture(null, 450L, 250L)
             bubble?.visibility = View.VISIBLE
             if (shot == null) {
                 toast("No pude capturar la pantalla")
@@ -661,7 +659,7 @@ class OverlayService : Service() {
                 (reg.left * capScale).roundToInt(), (reg.top * capScale).roundToInt(),
                 (reg.right * capScale).roundToInt(), (reg.bottom * capScale).roundToInt()
             )
-            val bmp = withContext(Dispatchers.Default) { cap.grab(cr) } ?: continue
+            val bmp = cap.capture(cr, 350L, 120L) ?: continue
             try {
                 val thumb = withContext(Dispatchers.Default) { Thumb.of(bmp) }
                 val p = prev

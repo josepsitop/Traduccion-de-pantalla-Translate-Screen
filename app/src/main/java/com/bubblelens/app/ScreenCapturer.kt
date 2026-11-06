@@ -11,7 +11,9 @@ import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.nio.Buffer
 import java.nio.ByteBuffer
 
@@ -39,6 +41,10 @@ class ScreenCapturer(
 
     var onStopped: (() -> Unit)? = null
 
+    // La pantalla solo se "espeja" durante unos instantes cuando se pide una captura.
+    private var active = false
+    private val idleRunnable = Runnable { pause() }
+
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
             onStopped?.invoke()
@@ -55,6 +61,55 @@ class ScreenCapturer(
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             r.surface, null, handler
         )
+        active = true
+        // Se guarda un primer fotograma y enseguida se pausa para no gastar batería.
+        pauseSoon(800L)
+    }
+
+    private fun resume() {
+        handler.removeCallbacks(idleRunnable)
+        synchronized(lock) {
+            if (!active) {
+                val r = reader
+                if (r != null) {
+                    try {
+                        display?.setSurface(r.surface)
+                        active = true
+                    } catch (e: Exception) {
+                    }
+                }
+            }
+        }
+    }
+
+    private fun pause() {
+        synchronized(lock) {
+            if (active) {
+                try {
+                    display?.setSurface(null)
+                } catch (e: Exception) {
+                }
+                active = false
+            }
+        }
+    }
+
+    private fun pauseSoon(ms: Long) {
+        handler.removeCallbacks(idleRunnable)
+        handler.postDelayed(idleRunnable, ms)
+    }
+
+    /**
+     * Despierta la captura, espera un fotograma nuevo, lo copia y vuelve a dormir.
+     * [region] está en píxeles de captura (null = pantalla completa).
+     */
+    suspend fun capture(region: Rect?, waitMs: Long, pauseAfterMs: Long): Bitmap? {
+        val before = frameCount
+        resume()
+        awaitNewFrame(before, waitMs)
+        val bmp = withContext(Dispatchers.Default) { grab(region) }
+        pauseSoon(pauseAfterMs)
+        return bmp
     }
 
     private fun newReader(w: Int, h: Int): ImageReader {
@@ -98,7 +153,7 @@ class ScreenCapturer(
         val nr = swapped.second
         try {
             display?.resize(w, h, dpi)
-            display?.setSurface(nr.surface)
+            if (active) display?.setSurface(nr.surface)
         } catch (e: Exception) {
             // si falla, el siguiente toque pedirá reactivar la captura
         }
@@ -155,6 +210,7 @@ class ScreenCapturer(
     }
 
     fun release() {
+        handler.removeCallbacks(idleRunnable)
         try {
             projection.unregisterCallback(callback)
         } catch (e: Exception) {
