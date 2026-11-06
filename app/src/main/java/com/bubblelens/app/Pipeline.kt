@@ -22,10 +22,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
 import kotlin.math.abs
 
-data class OcrBlock(val text: String, val box: Rect, val lines: Int)
+data class OcrBlock(val text: String, val box: Rect, val lines: Int, val corners: FloatArray? = null)
 
 /** Un bloque de texto de la pantalla ya traducido (modo "tocar"). */
-data class TBlock(val original: String, val translated: String, val box: Rect, val lines: Int)
+data class TBlock(
+    val original: String,
+    val translated: String,
+    val box: Rect,
+    val lines: Int,
+    val corners: FloatArray? = null,
+)
 
 /** Texto leído de una imagen, con el idioma (elegido o detectado). */
 data class ReadResult(val lang: String, val script: Script, val blocks: List<OcrBlock>)
@@ -66,7 +72,17 @@ object Engine {
         for (b in result.textBlocks) {
             val box = b.boundingBox ?: continue
             val text = Cleaner.joinLines(b.lines.map { it.text }, cjk)
-            if (text.isNotBlank()) out.add(OcrBlock(text, box, b.lines.size))
+            if (text.isBlank()) continue
+            val cp = b.cornerPoints
+            val corners: FloatArray? = if (cp != null && cp.size == 4) {
+                floatArrayOf(
+                    cp[0].x.toFloat(), cp[0].y.toFloat(), cp[1].x.toFloat(), cp[1].y.toFloat(),
+                    cp[2].x.toFloat(), cp[2].y.toFloat(), cp[3].x.toFloat(), cp[3].y.toFloat()
+                )
+            } else {
+                null
+            }
+            out.add(OcrBlock(text, box, b.lines.size, corners))
         }
         return out
     }
@@ -195,10 +211,15 @@ object Engine {
     }
 
     /** Traduce los bloques ya leídos. */
-    suspend fun translateRead(r: ReadResult, tgt: String): List<TBlock> {
+    suspend fun translateRead(r: ReadResult, tgt: String, maxBlocks: Int = Int.MAX_VALUE): List<TBlock> {
         if (r.lang == tgt) return emptyList()
         val out = ArrayList<TBlock>()
-        for (b in r.blocks) {
+        val blocks = if (r.blocks.size > maxBlocks) {
+            r.blocks.sortedByDescending { it.box.width() * it.box.height() }.take(maxBlocks)
+        } else {
+            r.blocks
+        }
+        for (b in blocks) {
             if (detect(b.text) == tgt) continue // ya está en tu idioma
             val t = try {
                 translateLong(b.text, r.lang, tgt)
@@ -208,7 +229,7 @@ object Engine {
                 continue
             }
             if (t.isBlank() || t.equals(b.text, ignoreCase = true)) continue
-            out.add(TBlock(b.text, t, b.box, b.lines))
+            out.add(TBlock(b.text, t, b.box, b.lines, b.corners))
         }
         return out
     }

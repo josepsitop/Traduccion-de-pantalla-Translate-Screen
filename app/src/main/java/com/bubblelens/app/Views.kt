@@ -28,10 +28,14 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 fun Context.dp(v: Float): Int = (v * resources.displayMetrics.density).roundToInt()
 fun Context.dpf(v: Float): Float = v * resources.displayMetrics.density
@@ -64,6 +68,34 @@ object Colors {
         for (x in xs) for (y in ys) add(x, y)
         add(min(l + 2, rr), (t + bb) / 2)
         add(max(rr - 2, l), (t + bb) / 2)
+        rs.sort(); gs.sort(); bs.sort()
+        val m = rs.size / 2
+        return Color.rgb(rs[m], gs[m], bs[m])
+    }
+
+    /** Igual que [sample] pero para un bloque girado: usa sus 4 esquinas (x0,y0,...,x3,y3). */
+    fun sampleQuad(b: Bitmap, c: FloatArray): Int {
+        val cx = (c[0] + c[2] + c[4] + c[6]) / 4f
+        val cy = (c[1] + c[3] + c[5] + c[7]) / 4f
+        val rs = ArrayList<Int>()
+        val gs = ArrayList<Int>()
+        val bs = ArrayList<Int>()
+        fun addPt(px: Float, py: Float) {
+            val dx = cx - px
+            val dy = cy - py
+            val d = max(1f, hypot(dx, dy))
+            val x = (px + dx / d * 3f).roundToInt().coerceIn(0, b.width - 1)
+            val y = (py + dy / d * 3f).roundToInt().coerceIn(0, b.height - 1)
+            val col = b.getPixel(x, y)
+            rs.add(Color.red(col))
+            gs.add(Color.green(col))
+            bs.add(Color.blue(col))
+        }
+        for (i in 0 until 4) addPt(c[i * 2], c[i * 2 + 1])
+        for (i in 0 until 4) {
+            val j = (i + 1) % 4
+            addPt((c[i * 2] + c[j * 2]) / 2f, (c[i * 2 + 1] + c[j * 2 + 1]) / 2f)
+        }
         rs.sort(); gs.sort(); bs.sort()
         val m = rs.size / 2
         return Color.rgb(rs[m], gs[m], bs[m])
@@ -461,9 +493,21 @@ class MenuView(
 
 /** Traducción dibujada sobre el texto original (modo "tocar", cámara en vivo y foto). */
 class TranslationOverlayView(ctx: Context) : View(ctx) {
-    private class Pre(val box: Rect, val text: String, val lines: Int, val bg: Int, val fg: Int)
+    private class Pre(
+        val box: Rect,
+        val corners: FloatArray?,
+        val text: String,
+        val lines: Int,
+        val bg: Int,
+        val fg: Int,
+    )
+
     private class Item(
-        val rect: RectF,
+        val x: Float,
+        val y: Float,
+        val angle: Float,
+        val w: Float,
+        val h: Float,
         val layout: StaticLayout,
         val bg: Int,
         val dx: Float,
@@ -476,6 +520,7 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
     private var fit = 0 // 0 = estirar a la vista, 1 = cubrir (cámara en vivo), 2 = encajar (foto)
     private var photo: Bitmap? = null
     private val dest = RectF()
+    private val tmp = RectF()
     private var items: List<Item> = emptyList()
     private val paintBg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pad = ctx.dpf(3f)
@@ -485,6 +530,18 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
 
     private fun fgFor(bg: Int): Int = if (Colors.luma(bg) > 150f) 0xFF16181D.toInt() else Color.WHITE
 
+    /** ¿El texto está girado respecto a la pantalla? (más de 4 grados) */
+    private fun isRotated(c: FloatArray?): Boolean {
+        if (c == null || c.size < 8) return false
+        val a = Math.toDegrees(atan2((c[3] - c[1]).toDouble(), (c[2] - c[0]).toDouble()))
+        return abs(a) > 4.0
+    }
+
+    private fun bgFor(bmp: Bitmap, b: TBlock): Int {
+        val c = b.corners
+        return if (c != null && isRotated(c)) Colors.sampleQuad(bmp, c) else Colors.sample(bmp, b.box)
+    }
+
     /** Captura de pantalla (la imagen ocupa toda la vista). */
     fun setBlocks(blocks: List<TBlock>, shot: Bitmap) {
         shotW = max(1, shot.width)
@@ -492,8 +549,8 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
         fit = 0
         photo = null
         pre = blocks.map { b ->
-            val bg = Colors.sample(shot, b.box)
-            Pre(b.box, b.translated, b.lines, bg, fgFor(bg))
+            val bg = bgFor(shot, b)
+            Pre(b.box, b.corners, b.translated, b.lines, bg, fgFor(bg))
         }
         build()
         invalidate()
@@ -505,7 +562,9 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
         shotH = max(1, imgH)
         fit = 1
         photo = null
-        pre = blocks.map { b -> Pre(b.box, b.translated, b.lines, 0xE60F1115.toInt(), Color.WHITE) }
+        pre = blocks.map { b ->
+            Pre(b.box, b.corners, b.translated, b.lines, 0xE60F1115.toInt(), Color.WHITE)
+        }
         build()
         invalidate()
     }
@@ -517,8 +576,8 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
         shotH = max(1, bmp.height)
         fit = 2
         pre = blocks.map { b ->
-            val bg = Colors.sample(bmp, b.box)
-            Pre(b.box, b.translated, b.lines, bg, fgFor(bg))
+            val bg = bgFor(bmp, b)
+            Pre(b.box, b.corners, b.translated, b.lines, bg, fgFor(bg))
         }
         build()
         invalidate()
@@ -546,6 +605,20 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
             .setIncludePad(false)
             .setLineSpacing(0f, 1f)
             .build()
+    }
+
+    /** Elige el tamaño de letra más grande que cabe en la caja. */
+    private fun fitText(p: Pre, availW: Float, bh: Float, minPx: Float, maxPx: Float): StaticLayout {
+        val lineH = bh / max(1, p.lines)
+        var size = (lineH * 0.78f).coerceIn(minPx, maxPx)
+        var layout = layoutFor(p.text, size, availW - pad * 2, p.fg)
+        var guard = 0
+        while (layout.height + pad * 2 > bh * 1.1f && size > minPx && guard < 60) {
+            size = max(minPx, size - 1f)
+            layout = layoutFor(p.text, size, availW - pad * 2, p.fg)
+            guard++
+        }
+        return layout
     }
 
     private fun build() {
@@ -591,30 +664,51 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
         val maxPx = context.spf(26f)
         val out = ArrayList<Item>(pre.size)
         for (p in pre) {
-            val left = offX + p.box.left * sx - pad
-            val top = offY + p.box.top * sy - pad
-            val bw = p.box.width() * sx + pad * 2
-            val bh = p.box.height() * sy + pad * 2
-            if (left + bw < 0f || left > vw || top + bh < 0f || top > vh) continue
-            val roomRight = vw - left - context.dpf(4f)
-            val availW = if (p.lines <= 1) max(bw, min(bw * 1.6f, roomRight)) else bw
-            val lineH = bh / max(1, p.lines)
-            var size = (lineH * 0.78f).coerceIn(minPx, maxPx)
-            var layout = layoutFor(p.text, size, availW - pad * 2, p.fg)
-            var guard = 0
-            while (layout.height + pad * 2 > bh * 1.1f && size > minPx && guard < 60) {
-                size = max(minPx, size - 1f)
-                layout = layoutFor(p.text, size, availW - pad * 2, p.fg)
-                guard++
+            val bl = offX + p.box.left * sx
+            val bt = offY + p.box.top * sy
+            val br = offX + p.box.right * sx
+            val bb = offY + p.box.bottom * sy
+            if (br < 0f || bl > vw || bb < 0f || bt > vh) continue
+
+            val c = p.corners
+            if (c != null && isRotated(c)) {
+                // Texto girado: se dibuja en el mismo eje que el original.
+                val x0 = offX + c[0] * sx
+                val y0 = offY + c[1] * sy
+                val x1 = offX + c[2] * sx
+                val y1 = offY + c[3] * sy
+                val x3 = offX + c[6] * sx
+                val y3 = offY + c[7] * sy
+                val len = hypot(x1 - x0, y1 - y0)
+                val hei = hypot(x3 - x0, y3 - y0)
+                val ang = Math.toDegrees(atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())).toFloat()
+                val bw = len + pad * 2
+                val bh = hei + pad * 2
+                val layout = fitText(p, bw, bh, minPx, maxPx)
+                val rh = max(bh, layout.height + pad * 2)
+                val rad = Math.toRadians(ang.toDouble())
+                val cs = cos(rad).toFloat()
+                val sn = sin(rad).toFloat()
+                val ox = x0 - (pad * cs - pad * sn)
+                val oy = y0 - (pad * sn + pad * cs)
+                val dy = (rh - pad * 2 - layout.height) / 2f
+                out.add(Item(ox, oy, ang, bw, rh, layout, p.bg, 0f, dy))
+            } else {
+                val left = bl - pad
+                val top = bt - pad
+                val bw = p.box.width() * sx + pad * 2
+                val bh = p.box.height() * sy + pad * 2
+                val roomRight = vw - left - context.dpf(4f)
+                val availW = if (p.lines <= 1) max(bw, min(bw * 1.6f, roomRight)) else bw
+                val layout = fitText(p, availW, bh, minPx, maxPx)
+                var textW = 0f
+                for (i in 0 until layout.lineCount) textW = max(textW, layout.getLineWidth(i))
+                val rw = min(max(bw, textW + pad * 2 + context.dpf(4f)), max(bw, vw - left))
+                val rh = max(bh, layout.height + pad * 2)
+                val dx = if (p.lines <= 1 && textW + pad * 2 < bw) (bw - pad * 2 - textW) / 2f else 0f
+                val dy = (rh - pad * 2 - layout.height) / 2f
+                out.add(Item(left, top, 0f, rw, rh, layout, p.bg, dx, dy))
             }
-            var textW = 0f
-            for (i in 0 until layout.lineCount) textW = max(textW, layout.getLineWidth(i))
-            val rw = min(max(bw, textW + pad * 2 + context.dpf(4f)), max(bw, vw - left))
-            val rh = max(bh, layout.height + pad * 2)
-            val rect = RectF(left, top, left + rw, top + rh)
-            val dx = if (p.lines <= 1 && textW + pad * 2 < bw) (bw - pad * 2 - textW) / 2f else 0f
-            val dy = (rh - pad * 2 - layout.height) / 2f
-            out.add(Item(rect, layout, p.bg, dx, dy))
         }
         items = out
     }
@@ -625,9 +719,12 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
         val rad = context.dpf(6f)
         for (item in items) {
             paintBg.color = item.bg
-            c.drawRoundRect(item.rect, rad, rad, paintBg)
             c.save()
-            c.translate(item.rect.left + pad + item.dx, item.rect.top + pad + item.dy)
+            c.translate(item.x, item.y)
+            if (item.angle != 0f) c.rotate(item.angle)
+            tmp.set(0f, 0f, item.w, item.h)
+            c.drawRoundRect(tmp, rad, rad, paintBg)
+            c.translate(pad + item.dx, pad + item.dy)
             item.layout.draw(c)
             c.restore()
         }

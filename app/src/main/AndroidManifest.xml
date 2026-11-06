@@ -41,7 +41,8 @@
 
         <activity
             android:name=".CameraActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:screenOrientation="fullSensor" />
 
         <service
             android:name=".OverlayService"

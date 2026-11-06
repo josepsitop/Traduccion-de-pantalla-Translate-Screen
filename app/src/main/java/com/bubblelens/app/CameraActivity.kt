@@ -53,8 +53,11 @@ import kotlin.math.min
 class CameraActivity : AppCompatActivity() {
 
     companion object {
-        private const val G = 40 // rejilla para detectar movimiento
-        private const val MOVE = 6.5f
+        private const val GW = 16 // rejilla (celdas) para detectar movimiento
+        private const val GH = 12
+        private const val MOVE = 3.5f // movimiento entre dos fotogramas
+        private const val SAME = 4.5f // misma escena que la ya procesada
+        private const val CHANGE = 5.5f // la escena cambió: quitar la traducción
         private const val HINT = "Apunta al texto y mantén quieto el teléfono"
     }
 
@@ -75,6 +78,7 @@ class CameraActivity : AppCompatActivity() {
 
     @Volatile private var frozenMode = false
     @Volatile private var busy = false
+    @Volatile private var overlayShown = false
     @Volatile private var prevThumb: IntArray? = null
     @Volatile private var processedThumb: IntArray? = null
     @Volatile private var lastScript: Script? = null
@@ -262,6 +266,7 @@ class CameraActivity : AppCompatActivity() {
         lastScript = null
         processedThumb = null
         prevThumb = null
+        overlayShown = false
         stable = 0
         if (!frozenMode) live.clear()
         refreshChips()
@@ -343,6 +348,11 @@ class CameraActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    /**
+     * Resumen de la imagen: promedio de brillo en una rejilla de 16x12 celdas.
+     * Al promediar celdas grandes, el temblor de la mano casi no cambia el resultado,
+     * pero mover el teléfono de verdad sí.
+     */
     private fun lumaThumb(proxy: ImageProxy): IntArray {
         val plane = proxy.planes[0]
         val buf = plane.buffer
@@ -350,20 +360,26 @@ class CameraActivity : AppCompatActivity() {
         val ps = plane.pixelStride
         val w = proxy.width
         val h = proxy.height
-        val out = IntArray(G * G)
-        for (j in 0 until G) {
-            val y0 = min(h - 4, (j * h) / G)
-            for (i in 0 until G) {
-                val x0 = min(w - 4, (i * w) / G)
-                var sum = 0
-                for (yy in 0 until 4) {
-                    val base = (y0 + yy) * rs
-                    for (xx in 0 until 4) sum += buf.get(base + (x0 + xx) * ps).toInt() and 0xFF
-                }
-                out[j * G + i] = sum shr 4
+        val sums = IntArray(GW * GH)
+        val counts = IntArray(GW * GH)
+        val colIdx = IntArray((w + 1) / 2) { (it * 2 * GW) / w }
+        var y = 0
+        while (y < h) {
+            val j = min(GH - 1, (y * GH) / h)
+            val base = y * rs
+            var x = 0
+            var k = 0
+            while (x < w) {
+                val idx = j * GW + colIdx[k]
+                sums[idx] += buf.get(base + x * ps).toInt() and 0xFF
+                counts[idx]++
+                x += 2
+                k++
             }
+            y += 2
         }
-        return out
+        for (n in sums.indices) sums[n] = if (counts[n] > 0) sums[n] / counts[n] else 0
+        return sums
     }
 
     private fun meanDiff(a: IntArray, b: IntArray): Float {
@@ -372,11 +388,11 @@ class CameraActivity : AppCompatActivity() {
         return s.toFloat() / a.size
     }
 
-    /** Se ejecuta en el hilo de análisis. Procesa un fotograma cada ~0,3 s y solo si estás quieto. */
+    /** Se ejecuta en el hilo de análisis. Mira un fotograma cada ~0,25 s. */
     @SuppressLint("UnsafeOptInUsageError")
     private fun onFrame(proxy: ImageProxy) {
         val now = SystemClock.uptimeMillis()
-        if (frozenMode || busy || now - lastMs < 280L) {
+        if (frozenMode || busy || now - lastMs < 250L) {
             proxy.close()
             return
         }
@@ -389,24 +405,38 @@ class CameraActivity : AppCompatActivity() {
         }
         val prev = prevThumb
         prevThumb = thumb
-        if (prev != null && meanDiff(prev, thumb) > MOVE) {
-            stable = 0
-            processedThumb = null
-            runOnUiThread {
-                live.clear()
-                setStatus(HINT)
+        val done = processedThumb
+
+        // 1) Con una traducción en pantalla: solo se quita si la escena cambió de verdad.
+        if (overlayShown && done != null) {
+            if (meanDiff(done, thumb) > CHANGE) {
+                overlayShown = false
+                processedThumb = null
+                stable = 0
+                runOnUiThread {
+                    live.clear()
+                    setStatus(HINT)
+                }
             }
             proxy.close()
             return
         }
+
+        // 2) Si te estás moviendo, esperar.
+        if (prev != null && meanDiff(prev, thumb) > MOVE) {
+            stable = 0
+            proxy.close()
+            return
+        }
+
+        // 3) Quieto durante 2 miradas seguidas: traducir.
         stable++
         if (stable < 2) {
             proxy.close()
             return
         }
-        val done = processedThumb
-        if (done != null && meanDiff(done, thumb) < MOVE) {
-            proxy.close()
+        if (done != null && meanDiff(done, thumb) < SAME) {
+            proxy.close() // misma escena ya revisada (sin texto)
             return
         }
         val media = proxy.image
@@ -427,7 +457,10 @@ class CameraActivity : AppCompatActivity() {
                 setStatus("Traduciendo…")
                 val read = Engine.read(input, pref, lastScript)
                 processedThumb = thumb
+                prevThumb = null
+                stable = 0
                 if (read == null) {
+                    overlayShown = false
                     live.clear()
                     setStatus(HINT)
                     return@launch
@@ -435,18 +468,21 @@ class CameraActivity : AppCompatActivity() {
                 lastScript = read.script
                 if (pref == "auto") srcChip.text = "Auto · " + Langs.name(read.lang) + " ▾"
                 if (!ensureReady(read.lang, tgt)) return@launch
-                val blocks = Engine.translateRead(read, tgt)
+                val blocks = Engine.translateRead(read, tgt, 24)
                 if (frozenMode) return@launch
                 if (blocks.isEmpty()) {
+                    overlayShown = false
                     live.clear()
                     setStatus(if (read.lang == tgt) "Ya está en tu idioma" else "Nada que traducir aquí")
                     return@launch
                 }
                 live.setLive(blocks, uw, uh)
+                overlayShown = true
                 setStatus(Langs.name(read.lang) + " → " + Langs.name(tgt))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                overlayShown = false
                 setStatus("No pude leer el texto, prueba de nuevo")
             } finally {
                 proxy.close()
@@ -539,6 +575,7 @@ class CameraActivity : AppCompatActivity() {
         shutter.text = ""
         processedThumb = null
         prevThumb = null
+        overlayShown = false
         stable = 0
         setStatus(HINT)
     }
