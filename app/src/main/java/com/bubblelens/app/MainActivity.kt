@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
         setupSliders()
 
         b.btnStart.setOnClickListener { onStartClicked() }
+        b.btnCamera.setOnClickListener { startActivity(Intent(this, CameraActivity::class.java)) }
         b.permOverlayBtn.setOnClickListener { openOverlaySettings() }
         b.permNotifBtn.setOnClickListener { askNotifications() }
         b.btnDownload.setOnClickListener { downloadModels() }

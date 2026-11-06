@@ -6,6 +6,7 @@ import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.languageid.LanguageIdentification
 import com.google.mlkit.nl.languageid.LanguageIdentificationOptions
+import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
@@ -25,6 +26,9 @@ data class OcrBlock(val text: String, val box: Rect, val lines: Int)
 
 /** Un bloque de texto de la pantalla ya traducido (modo "tocar"). */
 data class TBlock(val original: String, val translated: String, val box: Rect, val lines: Int)
+
+/** Texto leído de una imagen, con el idioma (elegido o detectado). */
+data class ReadResult(val lang: String, val script: Script, val blocks: List<OcrBlock>)
 
 /** Resultado del modo diálogo. [key] sirve para no repetir la misma traducción. */
 data class RegionResult(val name: String?, val text: String, val key: String)
@@ -52,8 +56,11 @@ object Engine {
         }
     }
 
-    private suspend fun ocr(bmp: Bitmap, script: Script): List<OcrBlock> {
-        val result = recognizer(script).process(InputImage.fromBitmap(bmp, 0)).await()
+    private suspend fun ocr(bmp: Bitmap, script: Script): List<OcrBlock> =
+        ocr(InputImage.fromBitmap(bmp, 0), script)
+
+    private suspend fun ocr(input: InputImage, script: Script): List<OcrBlock> {
+        val result = recognizer(script).process(input).await()
         val cjk = script != Script.LATIN
         val out = ArrayList<OcrBlock>()
         for (b in result.textBlocks) {
@@ -127,16 +134,74 @@ object Engine {
         return translated.joinToString(glue)
     }
 
-    /** Modo "tocar": traduce todos los bloques de texto de la captura. */
-    suspend fun translateScreen(bmp: Bitmap, src: String, tgt: String): List<TBlock> {
-        val script = Langs.byCode(src).script
+    // ---------- Lectura con idioma fijo o automático ----------
+
+    private fun baseLang(tag: String): String? {
+        if (tag == "und" || tag.contains("Latn", ignoreCase = true)) return null
+        val base = tag.substringBefore('-')
+        return if (TranslateLanguage.fromLanguageTag(base) != null) base else null
+    }
+
+    private fun defaultLang(script: Script): String = when (script) {
+        Script.LATIN -> "en"
+        Script.JAPANESE -> "ja"
+        Script.KOREAN -> "ko"
+        Script.CHINESE -> "zh"
+    }
+
+    private suspend fun readScript(input: InputImage, script: Script): List<OcrBlock> {
         val cjk = script != Script.LATIN
+        return ocr(input, script).filter { Cleaner.worthTranslating(it.text, cjk) }
+    }
+
+    /** Lee el texto de una imagen. [srcPref] = código de idioma o "auto" para detectarlo. */
+    suspend fun read(input: InputImage, srcPref: String, hint: Script?): ReadResult? {
+        if (srcPref != "auto") {
+            val l = Langs.byCode(srcPref)
+            val good = readScript(input, l.script)
+            return if (good.isEmpty()) null else ReadResult(l.code, l.script, good)
+        }
+        val order = ArrayList<Script>()
+        if (hint != null) order.add(hint)
+        for (s in listOf(Script.LATIN, Script.JAPANESE, Script.KOREAN, Script.CHINESE)) {
+            if (s !in order) order.add(s)
+        }
+        var fallback: ReadResult? = null
+        for (script in order) {
+            val good = readScript(input, script)
+            if (good.isEmpty()) continue
+            val sample = good.joinToString(" ") { it.text }
+            val lang = baseLang(detect(sample))
+            if (lang != null) {
+                val expected = when (lang) {
+                    "ja" -> Script.JAPANESE
+                    "ko" -> Script.KOREAN
+                    "zh" -> Script.CHINESE
+                    else -> null
+                }
+                if (expected == null && script == Script.LATIN) return ReadResult(lang, script, good)
+                if (expected == null) return ReadResult(lang, script, good)
+                if (expected == script) return ReadResult(lang, script, good)
+                if (script == Script.LATIN) {
+                    // texto latino "leído" de algo que parece asiático: seguir probando
+                    continue
+                }
+                val again = readScript(input, expected)
+                return ReadResult(lang, expected, if (again.isEmpty()) good else again)
+            }
+            if (fallback == null) fallback = ReadResult(defaultLang(script), script, good)
+        }
+        return fallback
+    }
+
+    /** Traduce los bloques ya leídos. */
+    suspend fun translateRead(r: ReadResult, tgt: String): List<TBlock> {
+        if (r.lang == tgt) return emptyList()
         val out = ArrayList<TBlock>()
-        for (b in ocr(bmp, script)) {
-            if (!Cleaner.worthTranslating(b.text, cjk)) continue
-            if (src != tgt && detect(b.text) == tgt) continue // ya está en tu idioma
+        for (b in r.blocks) {
+            if (detect(b.text) == tgt) continue // ya está en tu idioma
             val t = try {
-                translateLong(b.text, src, tgt)
+                translateLong(b.text, r.lang, tgt)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -146,6 +211,12 @@ object Engine {
             out.add(TBlock(b.text, t, b.box, b.lines))
         }
         return out
+    }
+
+    /** Modo "tocar": traduce todos los bloques de texto de la captura. */
+    suspend fun translateScreen(bmp: Bitmap, src: String, tgt: String): List<TBlock> {
+        val r = read(InputImage.fromBitmap(bmp, 0), src, null) ?: return emptyList()
+        return translateRead(r, tgt)
     }
 
     /** Modo diálogo: une el texto de la región en una sola frase con contexto y la traduce. */

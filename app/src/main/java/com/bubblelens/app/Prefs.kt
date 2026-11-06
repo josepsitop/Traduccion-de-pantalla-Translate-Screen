@@ -34,6 +34,11 @@ object Prefs {
         get() = sp.getString("tgt", "es") ?: "es"
         set(v) = sp.edit().putString("tgt", v).apply()
 
+    /** Idioma del texto en la cámara: "auto" = detectarlo solo */
+    var camSrc: String
+        get() = sp.getString("camSrc", "auto") ?: "auto"
+        set(v) = sp.edit().putString("camSrc", v).apply()
+
     /** "tap" = traducir pantalla al tocar, "auto" = diálogo automático */
     var mode: String
         get() = sp.getString("mode", "tap") ?: "tap"

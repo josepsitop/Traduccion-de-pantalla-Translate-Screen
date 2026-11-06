@@ -120,7 +120,7 @@ class BubbleView(ctx: Context) : FrameLayout(ctx) {
         label.gravity = Gravity.CENTER
         addView(
             label,
-            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         paint()
     }
@@ -405,8 +405,8 @@ class SubtitleView(ctx: Context) : LinearLayout(ctx) {
         bodyTv.setTextColor(Color.WHITE)
         bodyTv.setLineSpacing(0f, 1.12f)
 
-        addView(nameTv, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        addView(bodyTv, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(nameTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(bodyTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
     fun show(name: String?, text: String, sizeSp: Float) {
@@ -446,7 +446,7 @@ class MenuView(
                 dismiss()
                 action()
             }
-            addView(tv, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         setOnTouchListener { _, ev ->
             if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE) {
@@ -459,7 +459,7 @@ class MenuView(
     }
 }
 
-/** Traducción dibujada encima del texto original (modo "tocar"). */
+/** Traducción dibujada sobre el texto original (modo "tocar", cámara en vivo y foto). */
 class TranslationOverlayView(ctx: Context) : View(ctx) {
     private class Pre(val box: Rect, val text: String, val lines: Int, val bg: Int, val fg: Int)
     private class Item(
@@ -473,21 +473,61 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
     private var pre: List<Pre> = emptyList()
     private var shotW = 1
     private var shotH = 1
+    private var fit = 0 // 0 = estirar a la vista, 1 = cubrir (cámara en vivo), 2 = encajar (foto)
+    private var photo: Bitmap? = null
+    private val dest = RectF()
     private var items: List<Item> = emptyList()
     private val paintBg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pad = ctx.dpf(3f)
 
     var onDismiss: (() -> Unit)? = null
+    var consumeTouch = true
 
+    private fun fgFor(bg: Int): Int = if (Colors.luma(bg) > 150f) 0xFF16181D.toInt() else Color.WHITE
+
+    /** Captura de pantalla (la imagen ocupa toda la vista). */
     fun setBlocks(blocks: List<TBlock>, shot: Bitmap) {
         shotW = max(1, shot.width)
         shotH = max(1, shot.height)
+        fit = 0
+        photo = null
         pre = blocks.map { b ->
             val bg = Colors.sample(shot, b.box)
-            val fg = if (Colors.luma(bg) > 150f) 0xFF16181D.toInt() else Color.WHITE
-            Pre(b.box, b.translated, b.lines, bg, fg)
+            Pre(b.box, b.translated, b.lines, bg, fgFor(bg))
         }
         build()
+        invalidate()
+    }
+
+    /** Cámara en vivo: las cajas vienen en coordenadas de la imagen de análisis. */
+    fun setLive(blocks: List<TBlock>, imgW: Int, imgH: Int) {
+        shotW = max(1, imgW)
+        shotH = max(1, imgH)
+        fit = 1
+        photo = null
+        pre = blocks.map { b -> Pre(b.box, b.translated, b.lines, 0xE60F1115.toInt(), Color.WHITE) }
+        build()
+        invalidate()
+    }
+
+    /** Foto temporal (solo en memoria) con la traducción encima. */
+    fun setPhoto(bmp: Bitmap, blocks: List<TBlock>) {
+        photo = bmp
+        shotW = max(1, bmp.width)
+        shotH = max(1, bmp.height)
+        fit = 2
+        pre = blocks.map { b ->
+            val bg = Colors.sample(bmp, b.box)
+            Pre(b.box, b.translated, b.lines, bg, fgFor(bg))
+        }
+        build()
+        invalidate()
+    }
+
+    fun clear() {
+        pre = emptyList()
+        items = emptyList()
+        photo = null
         invalidate()
     }
 
@@ -509,21 +549,54 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
     }
 
     private fun build() {
-        if (width <= 0 || height <= 0 || pre.isEmpty()) {
+        if (width <= 0 || height <= 0) {
             items = emptyList()
             return
         }
-        val sx = width.toFloat() / shotW
-        val sy = height.toFloat() / shotH
+        val vw = width.toFloat()
+        val vh = height.toFloat()
+        val sx: Float
+        val sy: Float
+        val offX: Float
+        val offY: Float
+        when (fit) {
+            1 -> {
+                val k = max(vw / shotW, vh / shotH)
+                sx = k
+                sy = k
+                offX = (vw - shotW * k) / 2f
+                offY = (vh - shotH * k) / 2f
+            }
+            2 -> {
+                val k = min(vw / shotW, vh / shotH)
+                sx = k
+                sy = k
+                offX = (vw - shotW * k) / 2f
+                offY = (vh - shotH * k) / 2f
+            }
+            else -> {
+                sx = vw / shotW
+                sy = vh / shotH
+                offX = 0f
+                offY = 0f
+            }
+        }
+        dest.set(offX, offY, offX + shotW * sx, offY + shotH * sy)
+        if (pre.isEmpty()) {
+            items = emptyList()
+            return
+        }
+
         val minPx = context.spf(9f)
         val maxPx = context.spf(26f)
         val out = ArrayList<Item>(pre.size)
         for (p in pre) {
-            val left = p.box.left * sx - pad
-            val top = p.box.top * sy - pad
+            val left = offX + p.box.left * sx - pad
+            val top = offY + p.box.top * sy - pad
             val bw = p.box.width() * sx + pad * 2
             val bh = p.box.height() * sy + pad * 2
-            val roomRight = width - left - context.dpf(4f)
+            if (left + bw < 0f || left > vw || top + bh < 0f || top > vh) continue
+            val roomRight = vw - left - context.dpf(4f)
             val availW = if (p.lines <= 1) max(bw, min(bw * 1.6f, roomRight)) else bw
             val lineH = bh / max(1, p.lines)
             var size = (lineH * 0.78f).coerceIn(minPx, maxPx)
@@ -536,7 +609,7 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
             }
             var textW = 0f
             for (i in 0 until layout.lineCount) textW = max(textW, layout.getLineWidth(i))
-            val rw = min(max(bw, textW + pad * 2 + context.dpf(4f)), max(bw, width - left))
+            val rw = min(max(bw, textW + pad * 2 + context.dpf(4f)), max(bw, vw - left))
             val rh = max(bh, layout.height + pad * 2)
             val rect = RectF(left, top, left + rw, top + rh)
             val dx = if (p.lines <= 1 && textW + pad * 2 < bw) (bw - pad * 2 - textW) / 2f else 0f
@@ -547,18 +620,21 @@ class TranslationOverlayView(ctx: Context) : View(ctx) {
     }
 
     override fun onDraw(c: Canvas) {
+        val ph = photo
+        if (ph != null) c.drawBitmap(ph, null, dest, null)
         val rad = context.dpf(6f)
-        for (it in items) {
-            paintBg.color = it.bg
-            c.drawRoundRect(it.rect, rad, rad, paintBg)
+        for (item in items) {
+            paintBg.color = item.bg
+            c.drawRoundRect(item.rect, rad, rad, paintBg)
             c.save()
-            c.translate(it.rect.left + pad + it.dx, it.rect.top + pad + it.dy)
-            it.layout.draw(c)
+            c.translate(item.rect.left + pad + item.dx, item.rect.top + pad + item.dy)
+            item.layout.draw(c)
             c.restore()
         }
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (!consumeTouch) return false
         if (e.actionMasked == MotionEvent.ACTION_UP) onDismiss?.invoke()
         return true
     }

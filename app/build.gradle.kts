@@ -14,7 +14,7 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // Solo 64 bits: casi todos los teléfonos actuales y el APK pesa mucho menos.
+        // 64 y 32 bits en el mismo APK (Android elige el que le sirve).
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         resourceConfigurations += listOf("es", "en")
     }
@@ -73,4 +73,10 @@ dependencies {
     // Traducción sin internet + detección de idioma
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
+
+    // Cámara (CameraX)
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 }
